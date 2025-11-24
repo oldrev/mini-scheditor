@@ -85,4 +85,4 @@ This code is provided as a demo for educational/video purposes.
 
 Public Domain (no restrictions).
 
-Author: Li Wei (email: oldrev@gmail.com)
+Author: Li Wei (email: oldrev@gmail.com) (The code was primarily written by GitHub Copilot.)

@@ -103,4 +103,4 @@ dotnet run --project MiniScheditor.csproj
 
 公共领域 (无使用限制).
 
-作者：李维 (email: oldrev@gmail.com)
+作者：李维 (email: oldrev@gmail.com) （其实主要是 Copilot）
