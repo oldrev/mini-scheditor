@@ -97,6 +97,10 @@ dotnet run --project MiniScheditor.csproj
 
 ---
 
-## 贡献
+## 授权
 
-此仓库是一个用于学习和实验的演示项目。
+用于教学和视频演示。
+
+公共领域 (无使用限制).
+
+作者：李维 (email: oldrev@gmail.com)
