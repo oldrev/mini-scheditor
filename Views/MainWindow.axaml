@@ -1,7 +1,8 @@
 <Window xmlns="https://github.com/avaloniaui"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:vm="using:MiniScheditor.ViewModels"
-        xmlns:c="using:MiniScheditor.Controls"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="using:MiniScheditor.ViewModels"
+    xmlns:c="using:MiniScheditor.Controls"
+    xmlns:models="using:MiniScheditor.Models"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="450"
@@ -24,17 +25,30 @@
             <Button Command="{Binding SetToolComponentCommand}" CommandParameter="Capacitor" Content="Capacitor" />
             <Button Command="{Binding SetToolComponentCommand}" CommandParameter="NPN" Content="NPN" />
             <Button Command="{Binding SetToolComponentCommand}" CommandParameter="Diode" Content="Diode" />
-            <TextBlock Text="{Binding ActiveTool}" VerticalAlignment="Center" Margin="10,0,0,0"/>
+            <TextBlock Text="{Binding ActiveTool.Name}" VerticalAlignment="Center" Margin="10,0,0,0"/>
         </StackPanel>
 
         <Border DockPanel.Dock="Bottom" BorderBrush="#CCC" BorderThickness="0,1,0,0" Background="#F0F0F0" VerticalAlignment="Stretch">
             <TextBlock Text="{Binding StatusText}" FontFamily="Consolas" VerticalAlignment="Center" Margin="5" />
         </Border>
         
-        <c:SchematicCanvas Document="{Binding Document}" 
-                           ActiveTool="{Binding ActiveTool}"
-                           ComponentToPlace="{Binding ComponentToPlace}"
-                           MouseWorldPosition="{Binding MousePosition, Mode=OneWayToSource}"/>
+        <DockPanel DockPanel.Dock="Right" Width="230" Margin="6">
+            <Border BorderBrush="#DDD" BorderThickness="1" CornerRadius="4" Background="#F9F9F9" Padding="10">
+                <StackPanel Spacing="10">
+                    <TextBlock Text="Display" FontWeight="Bold" />
+                    <TextBlock Text="Grid" FontWeight="SemiBold" />
+                                    <ComboBox ItemsSource="{Binding GridModes}"
+                                              SelectedItem="{Binding GridMode, Mode=TwoWay}" />
+                    <CheckBox Content="Show Page Border" IsChecked="{Binding ShowPageBorder, Mode=TwoWay}" />
+                </StackPanel>
+            </Border>
+        </DockPanel>
+
+        <c:SchematicCanvas Document="{Binding Document}"
+                   ActiveTool="{Binding ActiveTool, Mode=TwoWay}"
+                   GridDisplayMode="{Binding GridMode, Mode=OneWay}"
+                   ShowPageBorder="{Binding ShowPageBorder, Mode=OneWay}"
+                   MouseWorldPosition="{Binding MousePosition, Mode=OneWayToSource}"/>
     </DockPanel>
 
 </Window>

@@ -10,7 +10,7 @@ using System.Runtime.InteropServices;
 
 namespace MiniScheditor.Controls;
 
-public class SchematicCanvas : Control
+public partial class SchematicCanvas : Control
 {
     public static readonly StyledProperty<SchematicDocument?> DocumentProperty =
         AvaloniaProperty.Register<SchematicCanvas, SchematicDocument?>(nameof(Document));
@@ -21,22 +21,31 @@ public class SchematicCanvas : Control
         set => SetValue(DocumentProperty, value);
     }
 
-    public static readonly StyledProperty<EditorTool> ActiveToolProperty =
-        AvaloniaProperty.Register<SchematicCanvas, EditorTool>(nameof(ActiveTool), EditorTool.Select);
+    public static readonly StyledProperty<EditTool> ActiveToolProperty =
+        AvaloniaProperty.Register<SchematicCanvas, EditTool>(nameof(ActiveTool), SelectTool.Instance);
 
-    public EditorTool ActiveTool
+    public EditTool ActiveTool
     {
         get => GetValue(ActiveToolProperty);
-        set => SetValue(ActiveToolProperty, value);
+        set => SetValue(ActiveToolProperty, value ?? SelectTool.Instance);
     }
 
-    public static readonly StyledProperty<Symbol?> ComponentToPlaceProperty =
-        AvaloniaProperty.Register<SchematicCanvas, Symbol?>(nameof(ComponentToPlace));
+    public static readonly StyledProperty<GridDisplayMode> GridDisplayModeProperty =
+        AvaloniaProperty.Register<SchematicCanvas, GridDisplayMode>(nameof(GridDisplayMode), GridDisplayMode.Lines);
 
-    public Symbol? ComponentToPlace
+    public GridDisplayMode GridDisplayMode
     {
-        get => GetValue(ComponentToPlaceProperty);
-        set => SetValue(ComponentToPlaceProperty, value);
+        get => GetValue(GridDisplayModeProperty);
+        set => SetValue(GridDisplayModeProperty, value);
+    }
+
+    public static readonly StyledProperty<bool> ShowPageBorderProperty =
+        AvaloniaProperty.Register<SchematicCanvas, bool>(nameof(ShowPageBorder));
+
+    public bool ShowPageBorder
+    {
+        get => GetValue(ShowPageBorderProperty);
+        set => SetValue(ShowPageBorderProperty, value);
     }
 
     public static readonly StyledProperty<Point> MouseWorldPositionProperty =
@@ -67,16 +76,24 @@ public class SchematicCanvas : Control
     private Point32 _wireStart;
     private Point32 _wireEnd;
 
+    private ComponentPlacementTool? ComponentPlacementTool => ActiveTool as ComponentPlacementTool;
+
     // Reusable buffer for query results to avoid allocations per frame
     private readonly List<SchematicObject> _visibleObjects = new List<SchematicObject>(1000);
+    private readonly HashSet<SchematicObject> _transientSelections = new HashSet<SchematicObject>();
+    private readonly List<SchematicObject> _hitTestResults = new List<SchematicObject>();
 
-    // 2.5mm grid base size
-    private const int BASE_GRID_SIZE = 2500000;
+    // 1.27mm grid base size (standard 0.05" spacing)
+    private const int BASE_GRID_SIZE = 1270000;
+    private const int A4_WIDTH = 297000000;
+    private const int A4_HEIGHT = 210000000;
 
     static SchematicCanvas()
     {
         AffectsRender<SchematicCanvas>(DocumentProperty);
         AffectsRender<SchematicCanvas>(ActiveToolProperty);
+        AffectsRender<SchematicCanvas>(GridDisplayModeProperty);
+        AffectsRender<SchematicCanvas>(ShowPageBorderProperty);
     }
 
     public SchematicCanvas()
@@ -106,6 +123,12 @@ public class SchematicCanvas : Control
                 _isSelecting = false;
                 InvalidateVisual();
             }
+
+            if (ActiveTool.ResetToSelectOnEscape && ActiveTool is not SelectTool)
+            {
+                ActiveTool = SelectTool.Instance;
+                InvalidateVisual();
+            }
         }
         else if (e.Key == Key.Delete)
         {
@@ -128,6 +151,8 @@ public class SchematicCanvas : Control
                     Document.RemoveObject(obj);
                 }
 
+                _transientSelections.Clear();
+
                 if (toRemove.Count > 0)
                 {
                     InvalidateVisual();
@@ -136,295 +161,19 @@ public class SchematicCanvas : Control
         }
     }
 
-    protected override void OnPointerPressed(PointerPressedEventArgs e)
+
+    protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
     {
-        base.OnPointerPressed(e);
-        Focus(); // Ensure we get focus on click
-        var point = e.GetCurrentPoint(this);
-        if (point.Properties.IsMiddleButtonPressed)
+        base.OnPropertyChanged(change);
+        if (change.Property == ActiveToolProperty)
         {
-            _isPanning = true;
-            _lastMousePos = point.Position;
-            e.Pointer.Capture(this);
-        }
-        else if (point.Properties.IsRightButtonPressed)
-        {
-            if (_isWiring)
+            if (change.NewValue is EditTool newTool && newTool is not WireTool)
             {
                 _isWiring = false;
-                e.Pointer.Capture(null);
-                InvalidateVisual();
             }
-        }
-        else if (point.Properties.IsLeftButtonPressed)
-        {
-            if (Document == null) return;
-
-            double worldX = (point.Position.X - _offsetX) / _scale;
-            double worldY = (point.Position.Y - _offsetY) / _scale;
-            var clickPoint = new Point32((int)worldX, (int)worldY);
-
-            if (ActiveTool == EditorTool.PlaceComponent && ComponentToPlace != null)
-            {
-                // Snap to grid
-                int snapX = (int)Math.Round(clickPoint.X / (double)BASE_GRID_SIZE) * BASE_GRID_SIZE;
-                int snapY = (int)Math.Round(clickPoint.Y / (double)BASE_GRID_SIZE) * BASE_GRID_SIZE;
-
-                var newComp = new Component(ComponentToPlace, snapX, snapY);
-                Document.AddObject(newComp);
-                InvalidateVisual();
-            }
-            else if (ActiveTool == EditorTool.Wire)
-            {
-                var snapPoint = GetSnapPoint(point.Position);
-
-                if (!_isWiring)
-                {
-                    _isWiring = true;
-                    _wireStart = snapPoint;
-                    _wireEnd = _wireStart;
-                    e.Pointer.Capture(this);
-                }
-                else
-                {
-                    // Constrain snapPoint if CTRL is not pressed
-                    bool isCtrlPressed = e.KeyModifiers.HasFlag(KeyModifiers.Control);
-                    if (!isCtrlPressed)
-                    {
-                        int dx = Math.Abs(snapPoint.X - _wireStart.X);
-                        int dy = Math.Abs(snapPoint.Y - _wireStart.Y);
-                        if (dx > dy) snapPoint = new Point32(snapPoint.X, _wireStart.Y);
-                        else snapPoint = new Point32(_wireStart.X, snapPoint.Y);
-                    }
-                    _wireEnd = snapPoint;
-
-                    // Finish current segment
-                    if (_wireStart.X != _wireEnd.X || _wireStart.Y != _wireEnd.Y)
-                    {
-                        var wire = new Wire(_wireStart, _wireEnd);
-                        Document.AddObject(wire);
-                        
-                        // Check for junctions at both ends
-                        CheckAndAddJunction(_wireStart);
-                        CheckAndAddJunction(_wireEnd);
-
-                        // Check if we should stop (snapped to a pin)
-                        if (IsPointOnPin(snapPoint))
-                        {
-                            _isWiring = false;
-                            e.Pointer.Capture(null);
-                        }
-                        else
-                        {
-                            // Continue wiring
-                            _wireStart = _wireEnd;
-                        }
-                        InvalidateVisual();
-                    }
-                }
-            }
-            else if (ActiveTool == EditorTool.Select)
-            {
-                // Check for hit
-                // Small hit rect
-                var hitRect = new Rect32(clickPoint.X - 100000, clickPoint.Y - 100000, 200000, 200000);
-                var hits = new List<SchematicObject>();
-                Document.SpatialIndex.Query(hitRect, hits);
-
-                if (hits.Count > 0)
-                {
-                    // Start Dragging
-                    _isDragging = true;
-                    _dragObject = hits[0]; // Pick first
-                    _dragStart = point.Position;
-
-                    if (_dragObject is Component comp)
-                    {
-                        _dragObjectStartPos = comp.Position;
-                    }
-
-                    // Select it
-                    foreach (var layer in Document.Layers)
-                        foreach (var obj in layer.Objects) obj.IsSelected = false;
-
-                    _dragObject.IsSelected = true;
-                    e.Pointer.Capture(this);
-                    InvalidateVisual();
-                    return;
-                }
-
-                _isSelecting = true;
-                _selectionStart = point.Position;
-                _selectionRect = new Rect(_selectionStart, new Size(0, 0));
-                e.Pointer.Capture(this);
-            }
-        }
-    }
-
-    protected override void OnPointerReleased(PointerReleasedEventArgs e)
-    {
-        base.OnPointerReleased(e);
-        if (e.InitialPressMouseButton == MouseButton.Middle)
-        {
-            _isPanning = false;
-            e.Pointer.Capture(null);
-        }
-        else if (e.InitialPressMouseButton == MouseButton.Left)
-        {
-            if (_isWiring)
-            {
-                // Do nothing on release for Click-Click mode
-            }
-            else if (_isDragging)
-            {
-                _isDragging = false;
-                _dragObject = null;
-                e.Pointer.Capture(null);
-            }
-            else if (_isSelecting)
-            {
-                _isSelecting = false;
-                e.Pointer.Capture(null);
-
-                // Perform selection
-                if (Document != null)
-                {
-                    // Convert selection rect to world
-                    double left = (_selectionRect.X - _offsetX) / _scale;
-                    double top = (_selectionRect.Y - _offsetY) / _scale;
-                    double w = _selectionRect.Width / _scale;
-                    double h = _selectionRect.Height / _scale;
-
-                    var worldRect = new Rect32(
-                        (int)Math.Floor(left),
-                        (int)Math.Floor(top),
-                        (int)Math.Ceiling(w),
-                        (int)Math.Ceiling(h)
-                    );
-
-                    var hits = new List<SchematicObject>();
-                    Document.SpatialIndex.Query(worldRect, hits);
-
-                    foreach (var layer in Document.Layers)
-                    {
-                        foreach (var obj in layer.Objects)
-                        {
-                            obj.IsSelected = false;
-                        }
-                    }
-
-                    foreach (var hit in hits)
-                    {
-                        hit.IsSelected = true;
-                    }
-
-                    InvalidateVisual();
-                }
-
-                _selectionRect = default;
-                InvalidateVisual();
-            }
-        }
-    }
-
-    protected override void OnPointerMoved(PointerEventArgs e)
-    {
-        base.OnPointerMoved(e);
-        var point = e.GetCurrentPoint(this);
-
-        // Update MouseWorldPosition
-        double wX = (point.Position.X - _offsetX) / _scale;
-        double wY = (point.Position.Y - _offsetY) / _scale;
-        MouseWorldPosition = new Point(wX, wY);
-
-        if (_isPanning)
-        {
-            var delta = point.Position - _lastMousePos;
-            _offsetX += delta.X;
-            _offsetY += delta.Y;
-            _lastMousePos = point.Position;
+            Focus();
             InvalidateVisual();
         }
-        else if (_isWiring)
-        {
-            var snapPoint = GetSnapPoint(point.Position);
-
-            // Constrain snapPoint if CTRL is not pressed
-            bool isCtrlPressed = e.KeyModifiers.HasFlag(KeyModifiers.Control);
-            if (!isCtrlPressed)
-            {
-                int dx = Math.Abs(snapPoint.X - _wireStart.X);
-                int dy = Math.Abs(snapPoint.Y - _wireStart.Y);
-                if (dx > dy) snapPoint = new Point32(snapPoint.X, _wireStart.Y);
-                else snapPoint = new Point32(_wireStart.X, snapPoint.Y);
-            }
-
-            _wireEnd = snapPoint;
-            InvalidateVisual();
-        }
-        else if (_isDragging && _dragObject is Component comp)
-        {
-            var deltaScreen = point.Position - _dragStart;
-            var deltaWorldX = (int)(deltaScreen.X / _scale);
-            var deltaWorldY = (int)(deltaScreen.Y / _scale);
-
-            var newX = _dragObjectStartPos.X + deltaWorldX;
-            var newY = _dragObjectStartPos.Y + deltaWorldY;
-
-            // Snap to Grid
-            // Use base grid size for snapping regardless of zoom level for consistency
-            newX = (int)Math.Round(newX / (double)BASE_GRID_SIZE) * BASE_GRID_SIZE;
-            newY = (int)Math.Round(newY / (double)BASE_GRID_SIZE) * BASE_GRID_SIZE;
-
-            comp.MoveTo(newX, newY);
-
-            // Re-insert into QuadTree (Naive approach: Remove and Add)
-            // For MVP, we might just update bounds and rebuild tree occasionally or handle dynamic updates.
-            // QuadTree doesn't support Move easily without Remove/Insert.
-            // Let's just invalidate visual for now, but QuadTree will be stale!
-            // TODO: Fix QuadTree update.
-
-            InvalidateVisual();
-        }
-        else if (_isSelecting)
-        {
-            var cur = point.Position;
-            var x = Math.Min(_selectionStart.X, cur.X);
-            var y = Math.Min(_selectionStart.Y, cur.Y);
-            var w = Math.Abs(_selectionStart.X - cur.X);
-            var h = Math.Abs(_selectionStart.Y - cur.Y);
-            _selectionRect = new Rect(x, y, w, h);
-            InvalidateVisual();
-        }
-    }
-
-    protected override void OnPointerWheelChanged(PointerWheelEventArgs e)
-    {
-        base.OnPointerWheelChanged(e);
-
-        var point = e.GetCurrentPoint(this).Position;
-
-        // Zoom center logic
-        // World = (Screen - Offset) / Scale
-        // NewScale = Scale * Factor
-        // NewOffset = Screen - World * NewScale
-
-        double zoomFactor = e.Delta.Y > 0 ? 1.1 : 0.9;
-        double oldScale = _scale;
-        double newScale = _scale * zoomFactor;
-
-        // Clamp scale
-        if (newScale < 1e-7) newScale = 1e-7;
-        if (newScale > 0.1) newScale = 0.1;
-
-        double worldX = (point.X - _offsetX) / oldScale;
-        double worldY = (point.Y - _offsetY) / oldScale;
-
-        _offsetX = point.X - (worldX * newScale);
-        _offsetY = point.Y - (worldY * newScale);
-        _scale = newScale;
-
-        InvalidateVisual();
     }
 
     public override void Render(DrawingContext context)
@@ -488,6 +237,17 @@ public class SchematicCanvas : Control
             }
         }
 
+        if (ShowPageBorder)
+        {
+            double rectWidth = A4_WIDTH * _scale;
+            double rectHeight = A4_HEIGHT * _scale;
+            double x = _offsetX - rectWidth / 2;
+            double y = _offsetY - rectHeight / 2;
+            var borderPen = new Pen(new SolidColorBrush(Color.FromRgb(120, 120, 120)), 1,
+                new DashStyle(new double[] { 6, 4 }, 0));
+            context.DrawRectangle(null, borderPen, new Rect(x, y, rectWidth, rectHeight));
+        }
+
         // Draw Origin Cross
         var originPen = new Pen(Brushes.Red, 1);
         double crossSize = 50;
@@ -525,41 +285,139 @@ public class SchematicCanvas : Control
             double y2 = _wireEnd.Y * _scale + _offsetY;
             context.DrawLine(new Pen(Brushes.Green, 2), new Point(x1, y1), new Point(x2, y2));
         }
+
+        // Draw Component Preview
+        if (ComponentPlacementTool != null)
+        {
+            var symbol = ComponentPlacementTool.Symbol;
+            // Snap to grid
+            int snapX = (int)Math.Round(MouseWorldPosition.X / (double)BASE_GRID_SIZE) * BASE_GRID_SIZE;
+            int snapY = (int)Math.Round(MouseWorldPosition.Y / (double)BASE_GRID_SIZE) * BASE_GRID_SIZE;
+            var previewPos = new Point32(snapX, snapY);
+
+            // Draw with gray color
+            var previewPen = new Pen(Brushes.Gray, 1);
+            foreach (var prim in symbol.Primitives)
+            {
+                if (prim is SymbolLine line)
+                {
+                    double x1 = (previewPos.X + line.Start.X * SYMBOL_SCALE) * _scale + _offsetX;
+                    double y1 = (previewPos.Y + line.Start.Y * SYMBOL_SCALE) * _scale + _offsetY;
+                    double x2 = (previewPos.X + line.End.X * SYMBOL_SCALE) * _scale + _offsetX;
+                    double y2 = (previewPos.Y + line.End.Y * SYMBOL_SCALE) * _scale + _offsetY;
+                    context.DrawLine(previewPen, new Point(x1, y1), new Point(x2, y2));
+                }
+                else if (prim is SymbolRect rect)
+                {
+                    double x = (previewPos.X + rect.Rect.X * SYMBOL_SCALE) * _scale + _offsetX;
+                    double y = (previewPos.Y + rect.Rect.Y * SYMBOL_SCALE) * _scale + _offsetY;
+                    double w = rect.Rect.Width * SYMBOL_SCALE * _scale;
+                    double h = rect.Rect.Height * SYMBOL_SCALE * _scale;
+                    var brush = rect.IsFilled ? Brushes.Gray : null;
+                    context.DrawRectangle(brush, previewPen, new Rect(x, y, w, h));
+                }
+                else if (prim is SymbolCircle circle)
+                {
+                    double cx = (previewPos.X + circle.Center.X * SYMBOL_SCALE) * _scale + _offsetX;
+                    double cy = (previewPos.Y + circle.Center.Y * SYMBOL_SCALE) * _scale + _offsetY;
+                    double r = circle.Radius * SYMBOL_SCALE * _scale;
+                    var brush = circle.IsFilled ? Brushes.Gray : null;
+                    context.DrawEllipse(brush, previewPen, new Point(cx, cy), r, r);
+                }
+            }
+
+            // Draw preview pins
+            foreach (var pin in symbol.Pins)
+            {
+                double px = (previewPos.X + pin.Position.X * SYMBOL_SCALE) * _scale + _offsetX;
+                double py = (previewPos.Y + pin.Position.Y * SYMBOL_SCALE) * _scale + _offsetY;
+                context.DrawEllipse(Brushes.Gray, null, new Point(px, py), 3, 3);
+            }
+        }
     }
 
     private void DrawGrid(DrawingContext context, Rect32 visibleRect)
     {
-        // Adaptive Grid Logic
-        // We want grid lines to be roughly 20-100 pixels apart on screen.
-        // Base grid is 2.5mm (2,500,000 nm)
+        if (GridDisplayMode == GridDisplayMode.None)
+        {
+            return;
+        }
 
+        if (GridDisplayMode == GridDisplayMode.Lines)
+        {
+            DrawGridLines(context, visibleRect);
+        }
+        else
+        {
+            DrawGridMarkers(context, visibleRect, GridDisplayMode == GridDisplayMode.Crosses);
+        }
+    }
+
+    private void DrawGridLines(DrawingContext context, Rect32 visibleRect)
+    {
         double minPixelSpacing = 20.0;
         long currentGridSize = BASE_GRID_SIZE;
 
-        // If grid is too small (dense), multiply by 2 until it's sparse enough
         while (currentGridSize * _scale < minPixelSpacing)
         {
             currentGridSize *= 2;
         }
 
-        // Calculate grid start
         long startX = (long)Math.Floor(visibleRect.X / (double)currentGridSize) * currentGridSize;
         long startY = (long)Math.Floor(visibleRect.Y / (double)currentGridSize) * currentGridSize;
 
         var pen = new Pen(Brushes.LightGray, 1);
 
-        // Vertical lines
         for (long x = startX; x <= visibleRect.Right; x += currentGridSize)
         {
             double screenX = x * _scale + _offsetX;
             context.DrawLine(pen, new Point(screenX, 0), new Point(screenX, Bounds.Height));
         }
 
-        // Horizontal lines
         for (long y = startY; y <= visibleRect.Bottom; y += currentGridSize)
         {
             double screenY = y * _scale + _offsetY;
             context.DrawLine(pen, new Point(0, screenY), new Point(Bounds.Width, screenY));
+        }
+    }
+
+    private void DrawGridMarkers(DrawingContext context, Rect32 visibleRect, bool drawCross)
+    {
+        // Use same adaptive spacing logic as grid lines so density matches
+        double minPixelSpacing = 20.0;
+        long currentGridSize = BASE_GRID_SIZE;
+        while (currentGridSize * _scale < minPixelSpacing)
+        {
+            currentGridSize *= 2;
+        }
+
+        long startX = (long)Math.Floor(visibleRect.X / (double)currentGridSize) * currentGridSize;
+        long startY = (long)Math.Floor(visibleRect.Y / (double)currentGridSize) * currentGridSize;
+
+        var pen = new Pen(Brushes.LightGray, 1);
+        var brush = Brushes.LightGray;
+
+        // �̶����سߴ磬�������ű仯 (�������� 1px һ��)
+        double crossHalf = 3.0;   // ���߳��ȣ����� 6px ʮ��
+        double dotRadius = 1.5;   // ֱ�� 3px �ĵ�
+
+        for (long x = startX; x <= visibleRect.Right; x += currentGridSize)
+        {
+            double screenX = x * _scale + _offsetX;
+            for (long y = startY; y <= visibleRect.Bottom; y += currentGridSize)
+            {
+                double screenY = y * _scale + _offsetY;
+
+                if (drawCross)
+                {
+                    context.DrawLine(pen, new Point(screenX - crossHalf, screenY), new Point(screenX + crossHalf, screenY));
+                    context.DrawLine(pen, new Point(screenX, screenY - crossHalf), new Point(screenX, screenY + crossHalf));
+                }
+                else
+                {
+                    context.DrawEllipse(brush, null, new Point(screenX, screenY), dotRadius, dotRadius);
+                }
+            }
         }
     }
 
@@ -632,15 +490,29 @@ public class SchematicCanvas : Control
             double thickness = wire.Thickness * _scale;
             if (thickness < 1) thickness = 1;
 
-            var wirePen = obj.IsSelected ? new Pen(Brushes.Blue, thickness) : new Pen(Brushes.Green, thickness);
-            context.DrawLine(wirePen, new Point(x1, y1), new Point(x2, y2));
+            if (obj.IsSelected)
+            {
+                // 2px border (4px total extra width)
+                var borderPen = new Pen(Brushes.Blue, thickness + 4);
+                context.DrawLine(borderPen, new Point(x1, y1), new Point(x2, y2));
+
+                // Wire color Xor (Green 008000 xor White FFFFFF = FF7FFF)
+                var xorColor = Color.FromRgb(255, 127, 255);
+                var wirePen = new Pen(new SolidColorBrush(xorColor), thickness);
+                context.DrawLine(wirePen, new Point(x1, y1), new Point(x2, y2));
+            }
+            else
+            {
+                var wirePen = new Pen(Brushes.Green, thickness);
+                context.DrawLine(wirePen, new Point(x1, y1), new Point(x2, y2));
+            }
         }
         else if (obj is Junction junction)
         {
             double x = junction.Position.X * _scale + _offsetX;
             double y = junction.Position.Y * _scale + _offsetY;
             double r = junction.Bounds.Width * _scale / 2;
-            
+
             var brush = obj.IsSelected ? Brushes.Blue : Brushes.Green;
             context.DrawEllipse(brush, null, new Point(x, y), r, r);
         }
@@ -674,8 +546,6 @@ public class SchematicCanvas : Control
 
     private Point32 GetSnapPoint(Point screenPos)
     {
-        if (Document == null) return new Point32(0, 0);
-
         double worldX = (screenPos.X - _offsetX) / _scale;
         double worldY = (screenPos.Y - _offsetY) / _scale;
 
@@ -728,13 +598,13 @@ public class SchematicCanvas : Control
             (int)(wireSearchRadius * 2),
             (int)(wireSearchRadius * 2)
         );
-        
+
         var wireHits = new List<SchematicObject>();
         Document.SpatialIndex.Query(wireSearchRect, wireHits);
-        
+
         Point32? bestWirePoint = null;
         double minWireDistSq = wireSearchRadius * wireSearchRadius;
-        
+
         var mousePos32 = new Point32((int)worldX, (int)worldY);
 
         foreach (var obj in wireHits)
@@ -744,7 +614,7 @@ public class SchematicCanvas : Control
                 // Find closest point on this wire segment to mousePos
                 var closest = GetClosestPointOnSegment(mousePos32, wire.Start, wire.End);
                 double distSq = DistanceSq(mousePos32, closest);
-                
+
                 if (distSq < minWireDistSq)
                 {
                     minWireDistSq = distSq;
@@ -752,10 +622,10 @@ public class SchematicCanvas : Control
                 }
             }
         }
-        
+
         if (bestWirePoint.HasValue)
         {
-             return bestWirePoint.Value;
+            return bestWirePoint.Value;
         }
 
         // 3. Snap to Grid
@@ -769,7 +639,7 @@ public class SchematicCanvas : Control
     {
         // Check if point is on the segment defined by wire.Start and wire.End
         // Assuming orthogonal wires for simplicity, but general case is also fine
-        
+
         // Check bounding box first with small tolerance
         int tolerance = 10000; // Small tolerance
         if (point.X < Math.Min(wire.Start.X, wire.End.X) - tolerance ||
@@ -789,13 +659,13 @@ public class SchematicCanvas : Control
     {
         double l2 = DistanceSq(v, w);
         if (l2 == 0) return Math.Sqrt(DistanceSq(p, v));
-        
+
         double t = ((p.X - v.X) * (w.X - v.X) + (p.Y - v.Y) * (w.Y - v.Y)) / l2;
         t = Math.Max(0, Math.Min(1, t));
-        
+
         double px = v.X + t * (w.X - v.X);
         double py = v.Y + t * (w.Y - v.Y);
-        
+
         return Math.Sqrt((p.X - px) * (p.X - px) + (p.Y - py) * (p.Y - py));
     }
 
@@ -843,7 +713,7 @@ public class SchematicCanvas : Control
             bool exists = false;
             var junctionSearch = new List<SchematicObject>();
             Document.SpatialIndex.Query(new Rect32(point.X - 100, point.Y - 100, 200, 200), junctionSearch);
-            foreach(var j in junctionSearch) if (j is Junction) exists = true;
+            foreach (var j in junctionSearch) if (j is Junction) exists = true;
 
             if (!exists)
             {
@@ -856,13 +726,81 @@ public class SchematicCanvas : Control
     {
         double l2 = DistanceSq(v, w);
         if (l2 == 0) return v;
-        
+
         double t = ((p.X - v.X) * (w.X - v.X) + (p.Y - v.Y) * (w.Y - v.Y)) / l2;
         t = Math.Max(0, Math.Min(1, t));
-        
+
         double px = v.X + t * (w.X - v.X);
         double py = v.Y + t * (w.Y - v.Y);
-        
+
         return new Point32((int)Math.Round(px), (int)Math.Round(py));
+    }
+
+    private void UpdateHoverSelection(Point position)
+    {
+        if (Document == null) return;
+        if (ActiveTool is not SelectTool) return;
+
+        // Check for explicit selection
+        bool hasExplicitSelection = false;
+        foreach (var layer in Document.Layers)
+        {
+            foreach (var obj in layer.Objects)
+            {
+                if (obj.IsSelected && !_transientSelections.Contains(obj))
+                {
+                    hasExplicitSelection = true;
+                    break;
+                }
+            }
+            if (hasExplicitSelection) break;
+        }
+
+        if (hasExplicitSelection)
+        {
+            ClearTransientSelections();
+            return;
+        }
+
+        double worldX = (position.X - _offsetX) / _scale;
+        double worldY = (position.Y - _offsetY) / _scale;
+        var clickPoint = new Point32((int)worldX, (int)worldY);
+
+        var hitRect = new Rect32(clickPoint.X - 100000, clickPoint.Y - 100000, 200000, 200000);
+        _hitTestResults.Clear();
+        Document.SpatialIndex.Query(hitRect, _hitTestResults);
+
+        SchematicObject? hitObject = null;
+        if (_hitTestResults.Count > 0)
+        {
+            hitObject = _hitTestResults[0];
+        }
+
+        if (hitObject != null && _transientSelections.Contains(hitObject))
+        {
+            return;
+        }
+
+        ClearTransientSelections();
+
+        if (hitObject != null && !hitObject.IsSelected)
+        {
+            hitObject.IsSelected = true;
+            _transientSelections.Add(hitObject);
+            InvalidateVisual();
+        }
+    }
+
+    private void ClearTransientSelections()
+    {
+        if (_transientSelections.Count > 0)
+        {
+            foreach (var obj in _transientSelections)
+            {
+                obj.IsSelected = false;
+            }
+            _transientSelections.Clear();
+            InvalidateVisual();
+        }
     }
 }

@@ -1,5 +1,7 @@
-﻿using MiniScheditor.Models;
-using MiniScheditor.Core;
+﻿using MiniScheditor.Core;
+using MiniScheditor.Models;
+using System;
+using System.Collections.Generic;
 using CommunityToolkit.Mvvm.Input;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Avalonia;
@@ -11,10 +13,15 @@ public partial class MainWindowViewModel : ViewModelBase
     public SchematicDocument Document { get; }
 
     [ObservableProperty]
-    private EditorTool _activeTool = EditorTool.Select;
+    private EditTool _activeTool = SelectTool.Instance;
 
     [ObservableProperty]
-    private Symbol? _componentToPlace;
+    private GridDisplayMode _gridMode = GridDisplayMode.Lines;
+
+    [ObservableProperty]
+    private bool _showPageBorder;
+
+    public IEnumerable<GridDisplayMode> GridModes => Enum.GetValues<GridDisplayMode>();
 
     [ObservableProperty]
     private Point _mousePosition;
@@ -64,28 +71,27 @@ public partial class MainWindowViewModel : ViewModelBase
     [RelayCommand]
     public void SetToolSelect()
     {
-        ActiveTool = EditorTool.Select;
-        ComponentToPlace = null;
+        ActiveTool = SelectTool.Instance;
     }
 
     [RelayCommand]
     public void SetToolWire()
     {
-        ActiveTool = EditorTool.Wire;
-        ComponentToPlace = null;
+        ActiveTool = new WireTool();
     }
 
     [RelayCommand]
     public void SetToolComponent(string type)
     {
-        ActiveTool = EditorTool.PlaceComponent;
-        switch (type)
+        EditTool tool = type switch
         {
-            case "Resistor": ComponentToPlace = SymbolLibrary.Resistor; break;
-            case "Capacitor": ComponentToPlace = SymbolLibrary.Capacitor; break;
-            case "NPN": ComponentToPlace = SymbolLibrary.TransistorNPN; break;
-            case "Diode": ComponentToPlace = SymbolLibrary.Diode; break;
-        }
+            "Resistor" => new ComponentPlacementTool(SymbolLibrary.Resistor),
+            "Capacitor" => new ComponentPlacementTool(SymbolLibrary.Capacitor),
+            "NPN" => new ComponentPlacementTool(SymbolLibrary.TransistorNPN),
+            "Diode" => new ComponentPlacementTool(SymbolLibrary.Diode),
+            _ => SelectTool.Instance
+        };
+        ActiveTool = tool;
     }
 }
 
