@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-![Screen shot](Assets/screenshot.png)
+![Screen shot](Assets/Screenshot.png)
 
 
 MiniScheditor 是一个基于 .NET + Avalonia 的小型演示程序，用于探索构建交互式电子原理图（电路图）编辑器时常用的算法和技术。它侧重于简洁且高质量的绘图画布、有效的空间索引、吸附与布线行为以及可扩展的符号库。该项目保持精简，用作 UI/UX 与几何处理技巧的练习平台。

@@ -2,7 +2,7 @@
 
 [中文](README.zh.md)
 
-![Screen shot](Assets/screenshot.png)
+![Screen shot](Assets/Screenshot.png)
 
 MiniScheditor is a compact .NET + Avalonia demo application that explores algorithms and techniques for building an interactive electronic schematic (circuit) editor. It focuses on a simple, high-quality drawing canvas, efficient spatial indexing, snapping and wiring behaviors, and an extendable symbol library. This project is intentionally small and educational — a playground for UI/UX and geometry techniques relevant to schematic editors.
 
