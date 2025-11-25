@@ -21,6 +21,9 @@ public partial class MainWindowViewModel : ViewModelBase
     [ObservableProperty]
     private bool _showPageBorder;
 
+    [ObservableProperty]
+    private double _rotationAngle = 0;
+
     public IEnumerable<GridDisplayMode> GridModes => Enum.GetValues<GridDisplayMode>();
 
     [ObservableProperty]
@@ -92,6 +95,25 @@ public partial class MainWindowViewModel : ViewModelBase
             _ => SelectTool.Instance
         };
         ActiveTool = tool;
+    }
+
+    [RelayCommand]
+    public void RotateLeft()
+    {
+        RotationAngle = (RotationAngle - 90) % 360;
+        if (RotationAngle < 0) RotationAngle += 360;
+    }
+
+    [RelayCommand]
+    public void RotateRight()
+    {
+        RotationAngle = (RotationAngle + 90) % 360;
+    }
+
+    [RelayCommand]
+    public void ResetRotation()
+    {
+        RotationAngle = 0;
     }
 }
 

@@ -99,7 +99,7 @@ public class Junction : SchematicObject
     {
         Position = position;
         // Size of the dot: 0.5mm = 500,000 nm
-        int size = 500000; 
+        int size = 500000;
         Bounds = new Rect32(Position.X - size / 2, Position.Y - size / 2, size, size);
     }
 }

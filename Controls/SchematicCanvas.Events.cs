@@ -10,7 +10,7 @@ using System.Runtime.InteropServices;
 
 namespace MiniScheditor.Controls;
 
-public partial class SchematicCanvas 
+public partial class SchematicCanvas
 {
     protected override void OnPointerWheelChanged(PointerWheelEventArgs e)
     {
@@ -19,9 +19,11 @@ public partial class SchematicCanvas
         var point = e.GetCurrentPoint(this).Position;
 
         // Zoom center logic
-        // World = (Screen - Offset) / Scale
-        // NewScale = Scale * Factor
-        // NewOffset = Screen - World * NewScale
+        // We want to keep the world point under the mouse fixed.
+        // World = Screen * InvM
+        // NewScreen = World * NewM
+        // We want NewScreen == Screen (at mouse pos)
+        // So we adjust Offset in NewM.
 
         double zoomFactor = e.Delta.Y > 0 ? 1.1 : 0.9;
         double oldScale = _scale;
@@ -31,11 +33,26 @@ public partial class SchematicCanvas
         if (newScale < 1e-7) newScale = 1e-7;
         if (newScale > 0.1) newScale = 0.1;
 
-        double worldX = (point.X - _offsetX) / oldScale;
-        double worldY = (point.Y - _offsetY) / oldScale;
+        // 1. Get World Point under mouse
+        var inverseTransform = GetScreenToWorldMatrix();
+        var worldPoint = point.Transform(inverseTransform);
 
-        _offsetX = point.X - (worldX * newScale);
-        _offsetY = point.Y - (worldY * newScale);
+        // 2. Calculate what the screen point would be with new scale but old offset
+        // We construct a matrix with new scale, same rotation, same offset
+        // Actually, we want to find the NEW offset.
+        // Screen = World * S * R * T
+        // Screen = (World * S * R) + Offset
+        // Offset = Screen - (World * S * R)
+
+        var rotationMatrix = Matrix.CreateRotation(Math.PI * Rotation / 180.0);
+        var scaleMatrix = Matrix.CreateScale(newScale, newScale);
+
+        // Calculate (World * S * R)
+        var transformedWorld = worldPoint.Transform(scaleMatrix * rotationMatrix);
+
+        // 3. Update Offset
+        _offsetX = point.X - transformedWorld.X;
+        _offsetY = point.Y - transformedWorld.Y;
         _scale = newScale;
 
         InvalidateVisual();
@@ -65,8 +82,10 @@ public partial class SchematicCanvas
         {
             if (Document == null) return;
 
-            double worldX = (point.Position.X - _offsetX) / _scale;
-            double worldY = (point.Position.Y - _offsetY) / _scale;
+            var inverseTransform = GetScreenToWorldMatrix();
+            var worldPoint = point.Position.Transform(inverseTransform);
+            double worldX = worldPoint.X;
+            double worldY = worldPoint.Y;
             var clickPoint = new Point32((int)worldX, (int)worldY);
 
             var placementTool = ActiveTool as ComponentPlacementTool;
@@ -109,7 +128,7 @@ public partial class SchematicCanvas
                     {
                         var wire = new Wire(_wireStart, _wireEnd);
                         Document.AddObject(wire);
-                        
+
                         // Check for junctions at both ends
                         CheckAndAddJunction(_wireStart);
                         CheckAndAddJunction(_wireEnd);
@@ -197,16 +216,29 @@ public partial class SchematicCanvas
                 if (Document != null)
                 {
                     // Convert selection rect to world
-                    double left = (_selectionRect.X - _offsetX) / _scale;
-                    double top = (_selectionRect.Y - _offsetY) / _scale;
-                    double w = _selectionRect.Width / _scale;
-                    double h = _selectionRect.Height / _scale;
+                    // Since selection rect is axis aligned in screen space,
+                    // it might be rotated in world space.
+                    // We need to find all objects inside the rotated rectangle.
+                    // For now, we can approximate by transforming the 4 corners and taking the bounding box.
+                    // Or better, use a polygon query if QuadTree supports it.
+                    // Assuming QuadTree only supports AABB, we take the AABB of the transformed rect.
+
+                    var inverseTransform = GetScreenToWorldMatrix();
+                    var p1 = _selectionRect.TopLeft.Transform(inverseTransform);
+                    var p2 = _selectionRect.TopRight.Transform(inverseTransform);
+                    var p3 = _selectionRect.BottomRight.Transform(inverseTransform);
+                    var p4 = _selectionRect.BottomLeft.Transform(inverseTransform);
+
+                    double minX = Math.Min(Math.Min(p1.X, p2.X), Math.Min(p3.X, p4.X));
+                    double maxX = Math.Max(Math.Max(p1.X, p2.X), Math.Max(p3.X, p4.X));
+                    double minY = Math.Min(Math.Min(p1.Y, p2.Y), Math.Min(p3.Y, p4.Y));
+                    double maxY = Math.Max(Math.Max(p1.Y, p2.Y), Math.Max(p3.Y, p4.Y));
 
                     var worldRect = new Rect32(
-                        (int)Math.Floor(left),
-                        (int)Math.Floor(top),
-                        (int)Math.Ceiling(w),
-                        (int)Math.Ceiling(h)
+                        (int)Math.Floor(minX),
+                        (int)Math.Floor(minY),
+                        (int)Math.Ceiling(maxX - minX),
+                        (int)Math.Ceiling(maxY - minY)
                     );
 
                     var hits = new List<SchematicObject>();
@@ -241,9 +273,9 @@ public partial class SchematicCanvas
         var point = e.GetCurrentPoint(this);
 
         // Update MouseWorldPosition
-        double wX = (point.Position.X - _offsetX) / _scale;
-        double wY = (point.Position.Y - _offsetY) / _scale;
-        MouseWorldPosition = new Point(wX, wY);
+        var inverseTransform = GetScreenToWorldMatrix();
+        var worldPoint = point.Position.Transform(inverseTransform);
+        MouseWorldPosition = worldPoint;
 
         // Set cursor based on active tool
         if (ActiveTool is ComponentPlacementTool || ActiveTool is WireTool)
@@ -283,8 +315,18 @@ public partial class SchematicCanvas
         else if (_isDragging && _dragObject is Component comp)
         {
             var deltaScreen = point.Position - _dragStart;
-            var deltaWorldX = (int)(deltaScreen.X / _scale);
-            var deltaWorldY = (int)(deltaScreen.Y / _scale);
+            // We need delta in world coordinates.
+            // DeltaWorld = DeltaScreen * InvM (without translation)
+            // Actually, simpler:
+            // CurrentWorld = point.Position * InvM
+            // StartWorld = _dragStart * InvM
+            // DeltaWorld = CurrentWorld - StartWorld
+
+            var startWorld = _dragStart.Transform(inverseTransform);
+            var currentWorld = point.Position.Transform(inverseTransform);
+
+            var deltaWorldX = (int)(currentWorld.X - startWorld.X);
+            var deltaWorldY = (int)(currentWorld.Y - startWorld.Y);
 
             var newX = _dragObjectStartPos.X + deltaWorldX;
             var newY = _dragObjectStartPos.Y + deltaWorldY;

@@ -40,6 +40,13 @@
                                     <ComboBox ItemsSource="{Binding GridModes}"
                                               SelectedItem="{Binding GridMode, Mode=TwoWay}" />
                     <CheckBox Content="Show Page Border" IsChecked="{Binding ShowPageBorder, Mode=TwoWay}" />
+                    
+                    <TextBlock Text="Rotation" FontWeight="SemiBold" />
+                    <Grid ColumnDefinitions="*,*,*">
+                        <Button Grid.Column="0" Command="{Binding RotateLeftCommand}" Content="L" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"/>
+                        <Button Grid.Column="1" Command="{Binding ResetRotationCommand}" Content="{Binding RotationAngle, StringFormat='{}{0}°'}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"/>
+                        <Button Grid.Column="2" Command="{Binding RotateRightCommand}" Content="R" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"/>
+                    </Grid>
                 </StackPanel>
             </Border>
         </DockPanel>
@@ -48,6 +55,7 @@
                    ActiveTool="{Binding ActiveTool, Mode=TwoWay}"
                    GridDisplayMode="{Binding GridMode, Mode=OneWay}"
                    ShowPageBorder="{Binding ShowPageBorder, Mode=OneWay}"
+                   Rotation="{Binding RotationAngle, Mode=OneWay}"
                    MouseWorldPosition="{Binding MousePosition, Mode=OneWayToSource}"/>
     </DockPanel>
 
