@@ -244,36 +244,30 @@ public partial class SchematicCanvas : Control
             visibleWorldRect = new Rect32(0, 0, 0, 0);
         }
 
-        // Draw White Background for WorldBounds
         using (context.PushTransform(transform))
         {
+            // Draw White Background for WorldBounds
             context.FillRectangle(Brushes.White, new Rect(
                 Document.WorldBounds.X, Document.WorldBounds.Y,
                 Document.WorldBounds.Width, Document.WorldBounds.Height));
-        }
 
-        // Draw Grid
-        using (context.PushTransform(transform))
-        {
+            // Draw Grid
             if (visibleWorldRect.Width > 0 && visibleWorldRect.Height > 0)
             {
                 DrawGrid(context, visibleWorldRect);
             }
-        }
 
-        if (ShowPageBorder)
-        {
-            using (context.PushTransform(transform))
+            if (ShowPageBorder)
             {
-                var borderPen = new Pen(new SolidColorBrush(Color.FromRgb(120, 120, 120)), 1.0 / _scale,
-                    new DashStyle(new double[] { 6, 4 }, 0));
-                context.DrawRectangle(null, borderPen, new Rect(0, 0, A4_WIDTH, A4_HEIGHT));
+                using (context.PushTransform(transform))
+                {
+                    var borderPen = new Pen(new SolidColorBrush(Color.FromRgb(120, 120, 120)), 1.0 / _scale,
+                        new DashStyle(new double[] { 6, 4 }, 0));
+                    context.DrawRectangle(null, borderPen, new Rect(0, 0, A4_WIDTH, A4_HEIGHT));
+                }
             }
-        }
 
-        // Draw Origin Cross
-        using (context.PushTransform(transform))
-        {
+            // Draw Origin Cross
             var originPen = new Pen(Brushes.Red, 1.0 / _scale);
             double crossSize = 50.0 / _scale;
             context.DrawLine(originPen, new Point(-crossSize, 0), new Point(crossSize, 0));
