@@ -105,10 +105,17 @@ public partial class SchematicCanvas : Control
     private readonly HashSet<SchematicObject> _transientSelections = new HashSet<SchematicObject>();
     private readonly List<SchematicObject> _hitTestResults = new List<SchematicObject>();
 
-    // 1.27mm grid base size (standard 0.05" spacing)
-    private const int BASE_GRID_SIZE = 1270000;
+    // 1.00mm grid base size (standard 0.05" spacing)
+    private const int BASE_GRID_SIZE = 1000000;
     private const int A4_WIDTH = 297000000;
     private const int A4_HEIGHT = 210000000;
+
+    // Cached pens and styles for performance
+    private static readonly Pen _gridPen = new Pen(Brushes.LightGray, 1);
+    private static readonly Pen _selectionRectPen = new Pen(Brushes.Blue, 1);
+    private static readonly SolidColorBrush _pageBorderBrush = new SolidColorBrush(Color.FromRgb(120, 120, 120));
+    private static readonly DashStyle _pageBorderDashStyle = new DashStyle(new double[] { 6, 4 }, 0);
+    private static readonly DashStyle _componentSelectionDashStyle = new DashStyle(new double[] { 4, 2 }, 0);
 
     static SchematicCanvas()
     {
@@ -259,19 +266,16 @@ public partial class SchematicCanvas : Control
 
             if (ShowPageBorder)
             {
-                using (context.PushTransform(transform))
-                {
-                    var borderPen = new Pen(new SolidColorBrush(Color.FromRgb(120, 120, 120)), 1.0 / _scale,
-                        new DashStyle(new double[] { 6, 4 }, 0));
-                    context.DrawRectangle(null, borderPen, new Rect(0, 0, A4_WIDTH, A4_HEIGHT));
-                }
+                var borderPen = new Pen(_pageBorderBrush, 1.0 / _scale, _pageBorderDashStyle);
+                context.DrawRectangle(null, borderPen, new Rect(0, 0, A4_WIDTH, A4_HEIGHT));
             }
 
             // Draw Origin Cross
-            var originPen = new Pen(Brushes.Red, 1.0 / _scale);
+            var originPenX = new Pen(Brushes.Red, 1.0 / _scale);
+            var originPenY = new Pen(Brushes.Green, 1.0 / _scale);
             double crossSize = 50.0 / _scale;
-            context.DrawLine(originPen, new Point(-crossSize, 0), new Point(crossSize, 0));
-            context.DrawLine(originPen, new Point(0, -crossSize), new Point(0, crossSize));
+            context.DrawLine(originPenX, new Point(-crossSize, 0), new Point(crossSize, 0));
+            context.DrawLine(originPenY, new Point(0, -crossSize), new Point(0, crossSize));
         }
 
         // Query QuadTree
@@ -295,7 +299,7 @@ public partial class SchematicCanvas : Control
         // Draw Selection Rect (Screen Space)
         if (_isSelecting)
         {
-            context.DrawRectangle(new Pen(Brushes.Blue, 1), _selectionRect);
+            context.DrawRectangle(_selectionRectPen, _selectionRect);
             context.FillRectangle(new SolidColorBrush(Colors.Blue, 0.2), _selectionRect);
         }
 
@@ -304,7 +308,7 @@ public partial class SchematicCanvas : Control
         {
             using (context.PushTransform(transform))
             {
-                context.DrawLine(new Pen(Brushes.Green, 2 * penScale),
+                context.DrawLine(new Pen(Brushes.Blue, 2 * penScale),
                     new Point(_wireStart.X, _wireStart.Y),
                     new Point(_wireEnd.X, _wireEnd.Y));
             }
@@ -437,7 +441,7 @@ public partial class SchematicCanvas : Control
         long startX = (long)Math.Floor(visibleRect.X / (double)currentGridSize) * currentGridSize;
         long startY = (long)Math.Floor(visibleRect.Y / (double)currentGridSize) * currentGridSize;
 
-        var pen = new Pen(Brushes.LightGray, 1);
+        var pen = _gridPen;
 
         for (long x = startX; x <= visibleRect.Right; x += currentGridSize)
         {
@@ -465,7 +469,7 @@ public partial class SchematicCanvas : Control
         long startX = (long)Math.Floor(visibleRect.X / (double)currentGridSize) * currentGridSize;
         long startY = (long)Math.Floor(visibleRect.Y / (double)currentGridSize) * currentGridSize;
 
-        var pen = new Pen(Brushes.LightGray, 1);
+        var pen = _gridPen;
         var brush = Brushes.LightGray;
 
         // �̶����سߴ磬�������ű仯 (�������� 1px һ��)
@@ -492,6 +496,7 @@ public partial class SchematicCanvas : Control
         }
     }
 
+    // 1 unit in Symbol coordinates = 1 nm (World Unit)
     private const int SYMBOL_SCALE = 100000;
 
     private void DrawObject(DrawingContext context, SchematicObject obj, double penScale)
@@ -538,7 +543,7 @@ public partial class SchematicCanvas : Control
             // Draw Selection Border
             if (obj.IsSelected)
             {
-                var selectionPen = new Pen(Brushes.Blue, 1 * penScale, new DashStyle(new double[] { 4, 2 }, 0));
+                var selectionPen = new Pen(Brushes.Blue, 1 * penScale, _componentSelectionDashStyle);
                 context.DrawRectangle(null, selectionPen, new Rect(
                     comp.Bounds.X - 5 * penScale,
                     comp.Bounds.Y - 5 * penScale,
@@ -569,7 +574,7 @@ public partial class SchematicCanvas : Control
             }
             else
             {
-                var wirePen = new Pen(Brushes.Green, thickness);
+                var wirePen = new Pen(Brushes.Blue, thickness);
                 context.DrawLine(wirePen, new Point(wire.Start.X, wire.Start.Y), new Point(wire.End.X, wire.End.Y));
             }
         }
