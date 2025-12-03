@@ -4,13 +4,14 @@ using Avalonia.Input;
 using Avalonia.Media;
 using MiniScheditor.Core;
 using MiniScheditor.Models;
+using MiniScheditor.Graphics;
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
 namespace MiniScheditor.Controls;
 
-public partial class SchematicCanvas : Control
+public partial class SchematicCanvas : SchematicView
 {
     public static readonly StyledProperty<SchematicDocument?> DocumentProperty =
         AvaloniaProperty.Register<SchematicCanvas, SchematicDocument?>(nameof(Document));
@@ -30,32 +31,7 @@ public partial class SchematicCanvas : Control
         set => SetValue(ActiveToolProperty, value ?? SelectTool.Instance);
     }
 
-    public static readonly StyledProperty<GridDisplayMode> GridDisplayModeProperty =
-        AvaloniaProperty.Register<SchematicCanvas, GridDisplayMode>(nameof(GridDisplayMode), GridDisplayMode.Lines);
-
-    public GridDisplayMode GridDisplayMode
-    {
-        get => GetValue(GridDisplayModeProperty);
-        set => SetValue(GridDisplayModeProperty, value);
-    }
-
-    public static readonly StyledProperty<bool> ShowPageBorderProperty =
-        AvaloniaProperty.Register<SchematicCanvas, bool>(nameof(ShowPageBorder));
-
-    public bool ShowPageBorder
-    {
-        get => GetValue(ShowPageBorderProperty);
-        set => SetValue(ShowPageBorderProperty, value);
-    }
-
-    public static readonly StyledProperty<double> RotationProperty =
-        AvaloniaProperty.Register<SchematicCanvas, double>(nameof(Rotation));
-
-    public double Rotation
-    {
-        get => GetValue(RotationProperty);
-        set => SetValue(RotationProperty, value);
-    }
+    // GridDisplayMode, ShowPageBorder, Rotation are inherited from SchematicView
 
     public static readonly StyledProperty<Point> MouseWorldPositionProperty =
         AvaloniaProperty.Register<SchematicCanvas, Point>(nameof(MouseWorldPosition));
@@ -66,24 +42,11 @@ public partial class SchematicCanvas : Control
         set => SetValue(MouseWorldPositionProperty, value);
     }
 
-    private double _scale = 0.00001; // 1 pixel = 100,000 nm (0.1mm) -> 10 pixels = 1mm. Start zoomed out.
-    private double _offsetX = 0;
-    private double _offsetY = 0;
+    // _scale, _offsetX, _offsetY are inherited from SchematicView
     private bool _isPanning;
     private Point _lastMousePos;
 
-    private Matrix GetWorldToScreenMatrix()
-    {
-        return Matrix.CreateScale(_scale, _scale) *
-               Matrix.CreateRotation(Math.PI * Rotation / 180.0) *
-               Matrix.CreateTranslation(_offsetX, _offsetY);
-    }
-
-    private Matrix GetScreenToWorldMatrix()
-    {
-        if (_scale == 0) return Matrix.Identity;
-        return GetWorldToScreenMatrix().Invert();
-    }
+    // GetWorldToScreenMatrix and GetScreenToWorldMatrix are inherited from SchematicView
 
     private bool _isSelecting;
     private Point _selectionStart;
@@ -101,20 +64,11 @@ public partial class SchematicCanvas : Control
     private ComponentPlacementTool? ComponentPlacementTool => ActiveTool as ComponentPlacementTool;
 
     // Reusable buffer for query results to avoid allocations per frame
-    private readonly List<SchematicObject> _visibleObjects = new List<SchematicObject>(1000);
     private readonly HashSet<SchematicObject> _transientSelections = new HashSet<SchematicObject>();
     private readonly List<SchematicObject> _hitTestResults = new List<SchematicObject>();
 
-    // 1.00mm grid base size (standard 0.05" spacing)
-    private const int BASE_GRID_SIZE = 1000000;
-    private const int A4_WIDTH = 297000000;
-    private const int A4_HEIGHT = 210000000;
-
     // Cached pens and styles for performance
-    private static readonly Pen _gridPen = new Pen(Brushes.LightGray, 1);
     private static readonly Pen _selectionRectPen = new Pen(Brushes.Blue, 1);
-    private static readonly SolidColorBrush _pageBorderBrush = new SolidColorBrush(Color.FromRgb(120, 120, 120));
-    private static readonly DashStyle _pageBorderDashStyle = new DashStyle(new double[] { 6, 4 }, 0);
     private static readonly DashStyle _componentSelectionDashStyle = new DashStyle(new double[] { 4, 2 }, 0);
 
     static SchematicCanvas()
@@ -204,97 +158,62 @@ public partial class SchematicCanvas : Control
             Focus();
             InvalidateVisual();
         }
+        else if (change.Property == DocumentProperty)
+        {
+            if (change.OldValue is SchematicDocument oldDoc)
+            {
+                oldDoc.ObjectAdded -= OnObjectAdded;
+                oldDoc.ObjectRemoved -= OnObjectRemoved;
+            }
+
+            if (change.NewValue is SchematicDocument doc)
+            {
+                var scene = new SchematicScene(doc.WorldBounds);
+                scene.SyncFromDocument(doc);
+                Scene = scene;
+
+                doc.ObjectAdded += OnObjectAdded;
+                doc.ObjectRemoved += OnObjectRemoved;
+            }
+            else
+            {
+                Scene = null;
+            }
+        }
+    }
+
+    private void OnObjectAdded(SchematicObject obj)
+    {
+        if (Scene != null)
+        {
+            var item = SchematicScene.CreateItem(obj);
+            Scene.AddItem(item);
+            InvalidateVisual();
+        }
+    }
+
+    private void OnObjectRemoved(SchematicObject obj)
+    {
+        if (Scene != null)
+        {
+            var item = Scene.GetItemForModel(obj);
+            if (item != null)
+            {
+                Scene.RemoveItem(item);
+                InvalidateVisual();
+            }
+        }
     }
 
     public override void Render(DrawingContext context)
     {
+        // Draw Scene (Background, Grid, Items)
         base.Render(context);
-
-        var bounds = Bounds;
-        // Fill background with Gray (invalid area)
-        context.FillRectangle(Brushes.LightGray, bounds);
 
         if (Document == null) return;
 
         var transform = GetWorldToScreenMatrix();
-        var inverseTransform = GetScreenToWorldMatrix();
-
-        // Calculate visible world rect (AABB of the rotated view)
-        var p1 = new Point(0, 0).Transform(inverseTransform);
-        var p2 = new Point(bounds.Width, 0).Transform(inverseTransform);
-        var p3 = new Point(bounds.Width, bounds.Height).Transform(inverseTransform);
-        var p4 = new Point(0, bounds.Height).Transform(inverseTransform);
-
-        double minX = Math.Min(Math.Min(p1.X, p2.X), Math.Min(p3.X, p4.X));
-        double maxX = Math.Max(Math.Max(p1.X, p2.X), Math.Max(p3.X, p4.X));
-        double minY = Math.Min(Math.Min(p1.Y, p2.Y), Math.Min(p3.Y, p4.Y));
-        double maxY = Math.Max(Math.Max(p1.Y, p2.Y), Math.Max(p3.Y, p4.Y));
-
-        // Intersect with WorldBounds
-        double iLeft = Math.Max(minX, Document.WorldBounds.Left);
-        double iTop = Math.Max(minY, Document.WorldBounds.Top);
-        double iRight = Math.Min(maxX, Document.WorldBounds.Right);
-        double iBottom = Math.Min(maxY, Document.WorldBounds.Bottom);
-
-        Rect32 visibleWorldRect;
-        if (iRight > iLeft && iBottom > iTop)
-        {
-            visibleWorldRect = Rect32.FromLTRB(
-                (int)Math.Floor(iLeft),
-                (int)Math.Floor(iTop),
-                (int)Math.Ceiling(iRight),
-                (int)Math.Ceiling(iBottom)
-            );
-        }
-        else
-        {
-            visibleWorldRect = new Rect32(0, 0, 0, 0);
-        }
-
-        using (context.PushTransform(transform))
-        {
-            // Draw White Background for WorldBounds
-            context.FillRectangle(Brushes.White, new Rect(
-                Document.WorldBounds.X, Document.WorldBounds.Y,
-                Document.WorldBounds.Width, Document.WorldBounds.Height));
-
-            // Draw Grid
-            if (visibleWorldRect.Width > 0 && visibleWorldRect.Height > 0)
-            {
-                DrawGrid(context, visibleWorldRect);
-            }
-
-            if (ShowPageBorder)
-            {
-                var borderPen = new Pen(_pageBorderBrush, 1.0 / _scale, _pageBorderDashStyle);
-                context.DrawRectangle(null, borderPen, new Rect(0, 0, A4_WIDTH, A4_HEIGHT));
-            }
-
-            // Draw Origin Cross
-            var originPenX = new Pen(Brushes.Red, 1.0 / _scale);
-            var originPenY = new Pen(Brushes.Green, 1.0 / _scale);
-            double crossSize = 50.0 / _scale;
-            context.DrawLine(originPenX, new Point(-crossSize, 0), new Point(crossSize, 0));
-            context.DrawLine(originPenY, new Point(0, -crossSize), new Point(0, crossSize));
-        }
-
-        // Query QuadTree
-        _visibleObjects.Clear();
-        if (visibleWorldRect.Width > 0 && visibleWorldRect.Height > 0)
-        {
-            Document.SpatialIndex.Query(visibleWorldRect, _visibleObjects);
-        }
-
-        // Draw Objects
         double penScale = 1.0 / _scale;
-        using (context.PushTransform(transform))
-        {
-            var span = CollectionsMarshal.AsSpan(_visibleObjects);
-            foreach (var obj in span)
-            {
-                DrawObject(context, obj, penScale);
-            }
-        }
 
         // Draw Selection Rect (Screen Space)
         if (_isSelecting)
@@ -365,226 +284,11 @@ public partial class SchematicCanvas : Control
         }
     }
 
-    private void DrawGrid(DrawingContext context, Rect32 visibleRect)
-    {
-        if (GridDisplayMode == GridDisplayMode.None)
-        {
-            return;
-        }
-
-        // Calculate grid size based on screen pixels
-        // We need to know how big the grid is on screen.
-        // Since we are drawing in world space, we check: gridWorldSize * _scale
-        double minPixelSpacing = 20.0;
-        long currentGridSize = BASE_GRID_SIZE;
-
-        while (currentGridSize * _scale < minPixelSpacing)
-        {
-            currentGridSize *= 2;
-        }
-
-        long startX = (long)Math.Floor(visibleRect.X / (double)currentGridSize) * currentGridSize;
-        long startY = (long)Math.Floor(visibleRect.Y / (double)currentGridSize) * currentGridSize;
-
-        double penThickness = 1.0 / _scale;
-        var pen = new Pen(Brushes.LightGray, penThickness);
-
-        if (GridDisplayMode == GridDisplayMode.Lines)
-        {
-            for (long x = startX; x <= visibleRect.Right; x += currentGridSize)
-            {
-                context.DrawLine(pen, new Point(x, visibleRect.Y), new Point(x, visibleRect.Bottom));
-            }
-
-            for (long y = startY; y <= visibleRect.Bottom; y += currentGridSize)
-            {
-                context.DrawLine(pen, new Point(visibleRect.X, y), new Point(visibleRect.Right, y));
-            }
-        }
-        else
-        {
-            // Markers
-            double crossHalf = 3.0 / _scale;
-            double dotRadius = 1.5 / _scale;
-            var brush = Brushes.LightGray;
-            bool drawCross = GridDisplayMode == GridDisplayMode.Crosses;
-
-            for (long x = startX; x <= visibleRect.Right; x += currentGridSize)
-            {
-                for (long y = startY; y <= visibleRect.Bottom; y += currentGridSize)
-                {
-                    if (drawCross)
-                    {
-                        context.DrawLine(pen, new Point(x - crossHalf, y), new Point(x + crossHalf, y));
-                        context.DrawLine(pen, new Point(x, y - crossHalf), new Point(x, y + crossHalf));
-                    }
-                    else
-                    {
-                        context.DrawEllipse(brush, null, new Point(x, y), dotRadius, dotRadius);
-                    }
-                }
-            }
-        }
-    }
 
 
-    private void DrawGridLines(DrawingContext context, Rect32 visibleRect)
-    {
-        double minPixelSpacing = 20.0;
-        long currentGridSize = BASE_GRID_SIZE;
-
-        while (currentGridSize * _scale < minPixelSpacing)
-        {
-            currentGridSize *= 2;
-        }
-
-        long startX = (long)Math.Floor(visibleRect.X / (double)currentGridSize) * currentGridSize;
-        long startY = (long)Math.Floor(visibleRect.Y / (double)currentGridSize) * currentGridSize;
-
-        var pen = _gridPen;
-
-        for (long x = startX; x <= visibleRect.Right; x += currentGridSize)
-        {
-            double screenX = x * _scale + _offsetX;
-            context.DrawLine(pen, new Point(screenX, 0), new Point(screenX, Bounds.Height));
-        }
-
-        for (long y = startY; y <= visibleRect.Bottom; y += currentGridSize)
-        {
-            double screenY = y * _scale + _offsetY;
-            context.DrawLine(pen, new Point(0, screenY), new Point(Bounds.Width, screenY));
-        }
-    }
-
-    private void DrawGridMarkers(DrawingContext context, Rect32 visibleRect, bool drawCross)
-    {
-        // Use same adaptive spacing logic as grid lines so density matches
-        double minPixelSpacing = 20.0;
-        long currentGridSize = BASE_GRID_SIZE;
-        while (currentGridSize * _scale < minPixelSpacing)
-        {
-            currentGridSize *= 2;
-        }
-
-        long startX = (long)Math.Floor(visibleRect.X / (double)currentGridSize) * currentGridSize;
-        long startY = (long)Math.Floor(visibleRect.Y / (double)currentGridSize) * currentGridSize;
-
-        var pen = _gridPen;
-        var brush = Brushes.LightGray;
-
-        // �̶����سߴ磬�������ű仯 (�������� 1px һ��)
-        double crossHalf = 3.0;   // ���߳��ȣ����� 6px ʮ��
-        double dotRadius = 1.5;   // ֱ�� 3px �ĵ�
-
-        for (long x = startX; x <= visibleRect.Right; x += currentGridSize)
-        {
-            double screenX = x * _scale + _offsetX;
-            for (long y = startY; y <= visibleRect.Bottom; y += currentGridSize)
-            {
-                double screenY = y * _scale + _offsetY;
-
-                if (drawCross)
-                {
-                    context.DrawLine(pen, new Point(screenX - crossHalf, screenY), new Point(screenX + crossHalf, screenY));
-                    context.DrawLine(pen, new Point(screenX, screenY - crossHalf), new Point(screenX, screenY + crossHalf));
-                }
-                else
-                {
-                    context.DrawEllipse(brush, null, new Point(screenX, screenY), dotRadius, dotRadius);
-                }
-            }
-        }
-    }
 
     // 1 unit in Symbol coordinates = 1 nm (World Unit)
     private const int SYMBOL_SCALE = 100000;
-
-    private void DrawObject(DrawingContext context, SchematicObject obj, double penScale)
-    {
-        // Default pen for unselected objects
-        var pen = new Pen(Brushes.Black, 1 * penScale);
-
-        if (obj is Component comp)
-        {
-            // Draw Symbol Primitives
-            foreach (var prim in comp.Symbol.Primitives)
-            {
-                if (prim is SymbolLine line)
-                {
-                    context.DrawLine(pen,
-                        new Point(comp.Position.X + line.Start.X * SYMBOL_SCALE, comp.Position.Y + line.Start.Y * SYMBOL_SCALE),
-                        new Point(comp.Position.X + line.End.X * SYMBOL_SCALE, comp.Position.Y + line.End.Y * SYMBOL_SCALE));
-                }
-                else if (prim is SymbolRect rect)
-                {
-                    var brush = rect.IsFilled ? Brushes.Black : null;
-                    context.DrawRectangle(brush, pen, new Rect(
-                        comp.Position.X + rect.Rect.X * SYMBOL_SCALE,
-                        comp.Position.Y + rect.Rect.Y * SYMBOL_SCALE,
-                        rect.Rect.Width * SYMBOL_SCALE,
-                        rect.Rect.Height * SYMBOL_SCALE));
-                }
-                else if (prim is SymbolCircle circle)
-                {
-                    var brush = circle.IsFilled ? Brushes.Black : null;
-                    double r = circle.Radius * SYMBOL_SCALE;
-                    context.DrawEllipse(brush, pen, new Point(
-                        comp.Position.X + circle.Center.X * SYMBOL_SCALE,
-                        comp.Position.Y + circle.Center.Y * SYMBOL_SCALE), r, r);
-                }
-            }
-
-            // Draw Pins
-            foreach (var pin in comp.Pins)
-            {
-                context.DrawEllipse(Brushes.Red, null, new Point(pin.Position.X, pin.Position.Y), 3 * penScale, 3 * penScale);
-            }
-
-            // Draw Selection Border
-            if (obj.IsSelected)
-            {
-                var selectionPen = new Pen(Brushes.Blue, 1 * penScale, _componentSelectionDashStyle);
-                context.DrawRectangle(null, selectionPen, new Rect(
-                    comp.Bounds.X - 5 * penScale,
-                    comp.Bounds.Y - 5 * penScale,
-                    comp.Bounds.Width + 10 * penScale,
-                    comp.Bounds.Height + 10 * penScale));
-            }
-        }
-        else if (obj is Wire wire)
-        {
-            // Wire.Thickness is in world units (e.g. 100,000 nm)
-            double thickness = wire.Thickness;
-
-            // Ensure minimum 1 pixel width on screen
-            // 1 screen pixel = penScale world units
-            if (thickness < penScale) thickness = penScale;
-
-            if (obj.IsSelected)
-            {
-                // 2px border (4px total extra width)
-                // 4px screen width = 4 * penScale world units
-                var borderPen = new Pen(Brushes.Blue, thickness + 4 * penScale);
-                context.DrawLine(borderPen, new Point(wire.Start.X, wire.Start.Y), new Point(wire.End.X, wire.End.Y));
-
-                // Wire color Xor (Green 008000 xor White FFFFFF = FF7FFF)
-                var xorColor = Color.FromRgb(255, 127, 255);
-                var wirePen = new Pen(new SolidColorBrush(xorColor), thickness);
-                context.DrawLine(wirePen, new Point(wire.Start.X, wire.Start.Y), new Point(wire.End.X, wire.End.Y));
-            }
-            else
-            {
-                var wirePen = new Pen(Brushes.Blue, thickness);
-                context.DrawLine(wirePen, new Point(wire.Start.X, wire.Start.Y), new Point(wire.End.X, wire.End.Y));
-            }
-        }
-        else if (obj is Junction junction)
-        {
-            double r = 3 * penScale;
-            var brush = obj.IsSelected ? Brushes.Blue : Brushes.Green;
-            context.DrawEllipse(brush, null, new Point(junction.Position.X, junction.Position.Y), r, r);
-        }
-    }
 
     private bool IsPointOnPin(Point32 point)
     {

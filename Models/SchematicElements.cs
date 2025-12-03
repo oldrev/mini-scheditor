@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using MiniScheditor.Core;
 
@@ -114,7 +115,10 @@ public class Layer
 
 public class SchematicDocument
 {
-    public QuadTree<SchematicObject> SpatialIndex { get; }
+    public event Action<SchematicObject>? ObjectAdded;
+    public event Action<SchematicObject>? ObjectRemoved;
+
+    public ISpatialIndex<SchematicObject> SpatialIndex { get; }
     public List<Layer> Layers { get; }
     public Rect32 WorldBounds { get; }
 
@@ -136,6 +140,7 @@ public class SchematicDocument
     {
         Layers[0].Objects.Add(obj);
         SpatialIndex.Insert(obj);
+        ObjectAdded?.Invoke(obj);
     }
 
     public void RemoveObject(SchematicObject obj)
@@ -145,5 +150,6 @@ public class SchematicDocument
             if (layer.Objects.Remove(obj)) break;
         }
         SpatialIndex.Remove(obj);
+        ObjectRemoved?.Invoke(obj);
     }
 }

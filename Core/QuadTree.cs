@@ -3,7 +3,7 @@ using System.Collections.Generic;
 
 namespace MiniScheditor.Core
 {
-    public class QuadTree<T> where T : ISpatialObject
+    public class QuadTree<T> : ISpatialIndex<T> where T : ISpatialObject
     {
         private const int MAX_OBJECTS = 10;
         private const int MAX_LEVELS = 12;
